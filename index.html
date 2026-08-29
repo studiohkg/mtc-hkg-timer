@@ -77,6 +77,20 @@
   }
   .cart-controls button:active{ background:var(--surface-2); }
 
+  .group-controls{
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--surface); border:1px solid var(--line); border-radius:10px;
+    padding:10px 14px; margin-bottom:6px; flex-wrap:wrap; gap:10px;
+  }
+  .group-controls .group-info{ font-size:13px; color:var(--chalk-dim); }
+  .group-controls .group-info b{ color:var(--accent); font-size:14px; }
+  #new-group-btn{
+    background:var(--ok-bg); border:1px solid var(--ok); color:var(--accent);
+    font-family:'Oswald',sans-serif; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;
+    font-size:12px; padding:8px 14px; border-radius:8px; cursor:pointer; white-space:nowrap;
+  }
+  #new-group-btn:active{ background:var(--ok); color:var(--chalk); }
+
   .grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(128px,1fr)); gap:12px; }
 
   .size-group{ margin-bottom:22px; }
@@ -318,6 +332,12 @@
     <button id="cart-plus">+</button>
   </div>
 
+  <div class="group-controls" id="group-controls">
+    <span class="group-info">Group <b class="mono" id="current-group-num">1</b> &middot; <span id="current-group-count">0</span> carts sent</span>
+    <button id="new-group-btn">New group &rarr;</button>
+  </div>
+  <p class="sync-note" style="margin:-8px 0 14px; text-align:left; opacity:0.6;">Tap "New group" once everyone in this batch has left &middot; otherwise it closes on its own after 3 min of no new starts</p>
+
   <div class="filter-row" id="filter-row">
     <span class="filter-label">Show sizes:</span>
   </div>
@@ -363,15 +383,15 @@
 
   const LIMIT_MS = 30*60*1000;
   const WARN_MS = 25*60*1000;
-  // carts whose start times fall within this window of each other are treated as
-  // "left together" and get grouped with a one-tap stop-all button on the Finish tab
+  // If a cart is started more than this long after the last one, it auto-rolls
+  // into a new group. Staff can also close a group manually at any time.
   const GROUP_WINDOW_MS = 3*60*1000;
   const POLL_MS = 3000;
   const SIZES = ['S','M','L','XL','V','G'];
   const SIZE_LABELS = { S:'Small', M:'Medium', L:'Large', XL:'Extra Large', V:'Variable', G:'Gravity' };
   const DEFAULT_SIZE = 'M';
 
-  let session = { cart_count: 8, carts: {}, cart_sizes: {} }; // carts: { "1": {state:'running', start: epochMs} }
+  let session = { cart_count: 8, carts: {}, cart_sizes: {}, current_group_id: 1, last_group_start_at: null };
   let log = []; // {id, cart, start, end, durationSec, overtime}
   let undoData = null;
   let undoTimer = null;
@@ -392,6 +412,8 @@
   const connBanner = document.getElementById('conn-banner');
   const filterRow = document.getElementById('filter-row');
   const sizeBreakdown = document.getElementById('size-breakdown');
+  const currentGroupNum = document.getElementById('current-group-num');
+  const currentGroupCount = document.getElementById('current-group-count');
   const settingsList = document.getElementById('settings-list');
   const finishList = document.getElementById('finish-list');
   const tabTrack = document.getElementById('tab-track');
@@ -421,6 +443,8 @@
     session.cart_count = data.cart_count;
     session.carts = data.carts || {};
     session.cart_sizes = data.cart_sizes || {};
+    session.current_group_id = data.current_group_id || 1;
+    session.last_group_start_at = data.last_group_start_at || null;
   }
 
   async function loadLog(){
@@ -439,7 +463,14 @@
   async function saveSession(){
     saving = true;
     const { error } = await sb.from('mountaincart_session')
-      .update({ cart_count: session.cart_count, carts: session.carts, cart_sizes: session.cart_sizes, updated_at: new Date().toISOString() })
+      .update({
+        cart_count: session.cart_count,
+        carts: session.carts,
+        cart_sizes: session.cart_sizes,
+        current_group_id: session.current_group_id,
+        last_group_start_at: session.last_group_start_at,
+        updated_at: new Date().toISOString()
+      })
       .eq('id', 1);
     saving = false;
     if(error){ showConnIssue(true); return false; }
@@ -488,6 +519,7 @@
     cartCountDisplay.textContent = session.cart_count;
     renderFilterChips();
     renderSizeBreakdown();
+    renderGroupInfo();
 
     grid.innerHTML = '';
     let runningCount = 0, overCount = 0;
@@ -629,6 +661,17 @@
     sizeBreakdown.innerHTML = `On the track by size: ${parts}`;
   }
 
+  function renderGroupInfo(){
+    const groupId = session.current_group_id || 1;
+    let countInGroup = 0;
+    for(let n=1; n<=session.cart_count; n++){
+      const cart = session.carts[n];
+      if(cart && cart.state === 'running' && (cart.group || 1) === groupId) countInGroup++;
+    }
+    currentGroupNum.textContent = groupId;
+    currentGroupCount.textContent = countInGroup;
+  }
+
   function renderSettings(){
     let html = '';
     for(let n=1; n<=session.cart_count; n++){
@@ -653,12 +696,12 @@
   }
 
   function renderFinish(){
-    // gather every currently running cart
+    // gather every currently running cart, tagged with the group it was started in
     const running = [];
     for(let n=1; n<=session.cart_count; n++){
       const cart = session.carts[n];
       if(cart && cart.state === 'running'){
-        running.push({ n, start: cart.start, size: sizeOf(n) });
+        running.push({ n, start: cart.start, size: sizeOf(n), group: cart.group != null ? cart.group : `solo-${n}` });
       }
     }
 
@@ -667,38 +710,34 @@
       return;
     }
 
-    // oldest start first: whoever has been out longest is most urgent to watch for
-    running.sort((a,b) => a.start - b.start);
-
-    // cluster carts that left within GROUP_WINDOW_MS of the previous one
-    const clusters = [];
-    let current = [];
+    // bucket by the group each cart was actually started in
+    const byGroup = new Map();
     running.forEach(item => {
-      if(current.length === 0){
-        current.push(item);
-      } else if(item.start - current[current.length-1].start <= GROUP_WINDOW_MS){
-        current.push(item);
-      } else {
-        clusters.push(current);
-        current = [item];
-      }
+      if(!byGroup.has(item.group)) byGroup.set(item.group, []);
+      byGroup.get(item.group).push(item);
     });
-    if(current.length) clusters.push(current);
+
+    // order groups by their earliest start time — whichever group has been out
+    // longest (most urgent to watch for) appears first
+    const clusters = Array.from(byGroup.entries()).map(([groupId, items]) => {
+      items.sort((a,b) => a.start - b.start);
+      return { groupId, items, earliestStart: items[0].start };
+    }).sort((a,b) => a.earliestStart - b.earliestStart);
 
     let html = '';
-    clusters.forEach(cluster => {
-      const isGroup = cluster.length > 1;
-      const cartNumsAttr = cluster.map(c => c.n).join(',');
+    clusters.forEach(({ groupId, items }) => {
+      const isGroup = items.length > 1;
+      const cartNumsAttr = items.map(c => c.n).join(',');
       html += `<div class="finish-cluster ${isGroup ? 'finish-cluster-multi' : ''}">`;
       if(isGroup){
         html += `
           <div class="finish-cluster-header">
-            <span class="label">Left together &middot; ${cluster.length} carts</span>
-            <button class="stop-all-btn" data-stop-group="${cartNumsAttr}">Stop all (${cluster.length})</button>
+            <span class="label">Group ${groupId} &middot; ${items.length} carts</span>
+            <button class="stop-all-btn" data-stop-group="${cartNumsAttr}">Stop all (${items.length})</button>
           </div>
         `;
       }
-      cluster.forEach(item => {
+      items.forEach(item => {
         const elapsed = Date.now() - item.start;
         const st = tileState(elapsed);
         const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
@@ -759,14 +798,27 @@
   async function handleTap(n){
     const cart = session.carts[n];
     if(!cart || cart.state !== 'running'){
-      // START now
-      session.carts[n] = { state:'running', start: Date.now() };
+      // START now — assign it to the current group, auto-rolling to a new
+      // group first if it's been quiet for longer than the fallback window
+      const now = Date.now();
+      if(session.last_group_start_at != null && (now - session.last_group_start_at) > GROUP_WINDOW_MS){
+        session.current_group_id = (session.current_group_id || 1) + 1;
+      }
+      session.carts[n] = { state:'running', start: now, group: session.current_group_id || 1 };
+      session.last_group_start_at = now;
       render();
       await saveSession();
     } else {
       // STOP now
       await stopCarts([n]);
     }
+  }
+
+  async function startNewGroup(){
+    session.current_group_id = (session.current_group_id || 1) + 1;
+    session.last_group_start_at = null;
+    render();
+    await saveSession();
   }
 
   async function stopCarts(cartNumbers){
@@ -805,7 +857,7 @@
       alert('Please enter a number of minutes, 0 or higher.');
       return;
     }
-    session.carts[n] = { state:'running', start: Date.now() - Math.round(minutesAgo*60000) };
+    session.carts[n] = { state:'running', start: Date.now() - Math.round(minutesAgo*60000), group: (cart && cart.group) || session.current_group_id || 1 };
     render();
     await saveSession();
   }
@@ -868,6 +920,8 @@
     await saveSession();
   });
 
+  document.getElementById('new-group-btn').addEventListener('click', () => startNewGroup());
+
   document.getElementById('clear-log').addEventListener('click', async () => {
     if(!confirm('Clear all completed rides from today\'s log? This cannot be undone.')) return;
     const ids = log.map(e => e.id).filter(id => id != null);
@@ -876,6 +930,10 @@
     if(ids.length){
       await sb.from('mountaincart_rides').delete().in('id', ids);
     }
+    session.current_group_id = 1;
+    session.last_group_start_at = null;
+    render();
+    await saveSession();
   });
 
   // live per-second tick for running tiles (no network calls)
