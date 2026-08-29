@@ -100,6 +100,47 @@
   }
   .size-group-header .count b{ color:var(--chalk); }
   .no-groups-msg{ color:var(--chalk-dim); font-size:13px; padding:14px 0; }
+
+  /* finish tab */
+  .finish-cluster{ margin-bottom:16px; }
+  .finish-cluster-multi{
+    border:1px solid var(--line); border-radius:14px; padding:10px; background:rgba(255,255,255,0.02);
+  }
+  .finish-cluster-header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:4px 4px 10px;
+    gap:10px;
+  }
+  .finish-cluster-header .label{
+    font-size:12px; color:var(--chalk-dim); text-transform:uppercase; letter-spacing:1px;
+  }
+  .stop-all-btn{
+    background:var(--over-bg); border:1px solid var(--over); color:var(--chalk);
+    font-family:'Oswald',sans-serif; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;
+    font-size:13px; padding:9px 16px; border-radius:8px; cursor:pointer; white-space:nowrap;
+  }
+  .stop-all-btn:active{ background:var(--over); }
+
+  .finish-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 16px; margin-bottom:8px;
+    min-height:0;
+  }
+  .finish-cluster-multi .finish-row{ margin-bottom:6px; }
+  .finish-cluster-multi .finish-row:last-child{ margin-bottom:0; }
+  .finish-row-left{ display:flex; align-items:center; gap:12px; }
+  .finish-row .num{ font-size:24px; }
+  .finish-row .finish-size{
+    font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700;
+    color:var(--chalk-dim); background:rgba(0,0,0,0.25); border:1px solid var(--line);
+    border-radius:6px; padding:3px 8px;
+  }
+  .finish-row-right{ text-align:right; }
+  .finish-row .timer{ font-size:22px; }
+  .finish-row .label{ font-size:11px; }
+  .empty-finish{
+    color:var(--chalk-dim); font-size:14px; text-align:center; padding:40px 10px;
+  }
   .tile{
     position:relative; background:var(--idle); border:2px solid var(--idle-line);
     border-radius:14px; padding:14px 12px 12px; min-height:118px;
@@ -258,6 +299,7 @@
 
 <div class="tabs">
   <button class="tab-btn active" id="tab-track" data-tab="track">Track</button>
+  <button class="tab-btn" id="tab-finish" data-tab="finish">Finish</button>
   <button class="tab-btn" id="tab-settings" data-tab="settings">Settings</button>
 </div>
 
@@ -298,6 +340,11 @@
 
 </div>
 
+<div class="view" id="view-finish">
+  <p class="settings-intro">Carts currently on their way down. Tap a cart when it arrives to stop its timer. Carts that left around the same time are grouped so you can stop them all at once.</p>
+  <div id="finish-list"></div>
+</div>
+
 <div class="view" id="view-settings">
   <p class="settings-intro">Set each cart's size here. This is a fixed property of the physical cart — it stays the same across rides until you change it here.</p>
   <div id="settings-list"></div>
@@ -316,6 +363,9 @@
 
   const LIMIT_MS = 30*60*1000;
   const WARN_MS = 25*60*1000;
+  // carts whose start times fall within this window of each other are treated as
+  // "left together" and get grouped with a one-tap stop-all button on the Finish tab
+  const GROUP_WINDOW_MS = 3*60*1000;
   const POLL_MS = 3000;
   const SIZES = ['S','M','L','XL','V','G'];
   const SIZE_LABELS = { S:'Small', M:'Medium', L:'Large', XL:'Extra Large', V:'Variable', G:'Gravity' };
@@ -343,9 +393,12 @@
   const filterRow = document.getElementById('filter-row');
   const sizeBreakdown = document.getElementById('size-breakdown');
   const settingsList = document.getElementById('settings-list');
+  const finishList = document.getElementById('finish-list');
   const tabTrack = document.getElementById('tab-track');
+  const tabFinish = document.getElementById('tab-finish');
   const tabSettings = document.getElementById('tab-settings');
   const viewTrack = document.getElementById('view-track');
+  const viewFinish = document.getElementById('view-finish');
   const viewSettings = document.getElementById('view-settings');
 
   function fmt(ms){
@@ -394,21 +447,24 @@
     return true;
   }
 
-  async function insertRide(entry){
-    const { data, error } = await sb.from('mountaincart_rides').insert({
+  async function insertRides(entries){
+    const rows = entries.map(entry => ({
       cart: entry.cart,
       started_at: new Date(entry.start).toISOString(),
       ended_at: new Date(entry.end).toISOString(),
       duration_seconds: entry.durationSec,
       overtime: entry.overtime
-    }).select().single();
-    if(error){ showConnIssue(true); return null; }
+    }));
+    const { data, error } = await sb.from('mountaincart_rides').insert(rows).select();
+    if(error){ showConnIssue(true); return entries.map(() => null); }
     showConnIssue(false);
-    return data.id;
+    return data.map(d => d.id);
   }
 
-  async function deleteRide(id){
-    await sb.from('mountaincart_rides').delete().eq('id', id);
+  async function deleteRides(ids){
+    const cleanIds = ids.filter(id => id != null);
+    if(cleanIds.length === 0) return;
+    await sb.from('mountaincart_rides').delete().in('id', cleanIds);
   }
 
   async function pollState(){
@@ -535,6 +591,7 @@
     statOver.textContent = overCount;
     renderLog();
     renderSettings();
+    renderFinish();
   }
 
   function renderFilterChips(){
@@ -595,6 +652,87 @@
     });
   }
 
+  function renderFinish(){
+    // gather every currently running cart
+    const running = [];
+    for(let n=1; n<=session.cart_count; n++){
+      const cart = session.carts[n];
+      if(cart && cart.state === 'running'){
+        running.push({ n, start: cart.start, size: sizeOf(n) });
+      }
+    }
+
+    if(running.length === 0){
+      finishList.innerHTML = '<p class="empty-finish">No carts on the mountain right now.</p>';
+      return;
+    }
+
+    // oldest start first: whoever has been out longest is most urgent to watch for
+    running.sort((a,b) => a.start - b.start);
+
+    // cluster carts that left within GROUP_WINDOW_MS of the previous one
+    const clusters = [];
+    let current = [];
+    running.forEach(item => {
+      if(current.length === 0){
+        current.push(item);
+      } else if(item.start - current[current.length-1].start <= GROUP_WINDOW_MS){
+        current.push(item);
+      } else {
+        clusters.push(current);
+        current = [item];
+      }
+    });
+    if(current.length) clusters.push(current);
+
+    let html = '';
+    clusters.forEach(cluster => {
+      const isGroup = cluster.length > 1;
+      const cartNumsAttr = cluster.map(c => c.n).join(',');
+      html += `<div class="finish-cluster ${isGroup ? 'finish-cluster-multi' : ''}">`;
+      if(isGroup){
+        html += `
+          <div class="finish-cluster-header">
+            <span class="label">Left together &middot; ${cluster.length} carts</span>
+            <button class="stop-all-btn" data-stop-group="${cartNumsAttr}">Stop all (${cluster.length})</button>
+          </div>
+        `;
+      }
+      cluster.forEach(item => {
+        const elapsed = Date.now() - item.start;
+        const st = tileState(elapsed);
+        const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
+        html += `
+          <div class="tile finish-row ${st}" data-cart="${item.n}">
+            <div class="finish-row-left">
+              <div class="num">#${item.n}</div>
+              <div class="finish-size">${item.size}</div>
+            </div>
+            <div class="finish-row-right">
+              <div class="timer">${fmt(elapsed)}</div>
+              <div class="label">${st==='over' ? 'over time \u2014 double' : st==='warn' ? 'warning' : 'on track'}</div>
+            </div>
+            <div class="bar-track"><div class="bar-fill" style="width:${pct}%; background:${st==='over'?'var(--over)':st==='warn'?'var(--warn)':'var(--ok)'}"></div></div>
+          </div>
+        `;
+      });
+      html += `</div>`;
+    });
+
+    finishList.innerHTML = html;
+
+    finishList.querySelectorAll('[data-cart]').forEach(row => {
+      row.addEventListener('click', () => handleTap(parseInt(row.dataset.cart, 10)));
+    });
+    finishList.querySelectorAll('[data-stop-group]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const nums = btn.dataset.stopGroup.split(',').map(x => parseInt(x, 10));
+        await stopCarts(nums);
+      });
+    });
+  }
+
   function renderLog(){
     statTotal.textContent = log.length;
     if(log.length === 0){
@@ -627,21 +765,28 @@
       await saveSession();
     } else {
       // STOP now
+      await stopCarts([n]);
+    }
+  }
+
+  async function stopCarts(cartNumbers){
+    const end = Date.now();
+    const entries = cartNumbers.map(n => {
+      const cart = session.carts[n];
       const start = cart.start;
-      const end = Date.now();
       const durationSec = Math.round((end-start)/1000);
       const overtime = (end-start) >= LIMIT_MS;
-      const entry = { cart:n, start, end, durationSec, overtime };
+      return { cart:n, start, end, durationSec, overtime };
+    });
 
-      session.carts[n] = { state:'idle' };
-      render();
-      await saveSession();
-      const id = await insertRide(entry);
-      entry.id = id;
-      log.unshift(entry);
-      renderLog();
-      showUndo(entry);
-    }
+    cartNumbers.forEach(n => { session.carts[n] = { state:'idle' }; });
+    render();
+    await saveSession();
+
+    const ids = await insertRides(entries);
+    entries.forEach((e,i) => { e.id = ids[i]; log.unshift(e); });
+    renderLog();
+    showUndo(entries);
   }
 
   async function handleAdjust(n){
@@ -665,10 +810,16 @@
     await saveSession();
   }
 
-  function showUndo(entry){
+  function showUndo(entries){
     if(undoTimer) clearTimeout(undoTimer);
-    undoData = entry;
-    toastText.textContent = `Cart #${entry.cart} stopped \u2014 ${fmt(entry.durationSec*1000)}${entry.overtime ? ' (double)' : ''}`;
+    undoData = entries; // always an array now, even for a single stop
+    if(entries.length === 1){
+      const entry = entries[0];
+      toastText.textContent = `Cart #${entry.cart} stopped \u2014 ${fmt(entry.durationSec*1000)}${entry.overtime ? ' (double)' : ''}`;
+    } else {
+      const overCount = entries.filter(e => e.overtime).length;
+      toastText.textContent = `Stopped ${entries.length} carts${overCount ? ` \u2014 ${overCount} double` : ''}`;
+    }
     toast.classList.add('show');
     undoTimer = setTimeout(() => {
       toast.classList.remove('show');
@@ -677,11 +828,14 @@
   }
 
   toastUndo.addEventListener('click', async () => {
-    if(!undoData) return;
-    const idx = log.findIndex(e => e.id === undoData.id);
-    if(idx > -1) log.splice(idx,1);
-    if(undoData.id != null) await deleteRide(undoData.id);
-    session.carts[undoData.cart] = { state:'running', start: undoData.start };
+    if(!undoData || undoData.length === 0) return;
+    const ids = undoData.map(e => e.id);
+    undoData.forEach(entry => {
+      const idx = log.findIndex(e => e.id === entry.id);
+      if(idx > -1) log.splice(idx,1);
+      session.carts[entry.cart] = { state:'running', start: entry.start };
+    });
+    await deleteRides(ids);
     render();
     await saveSession();
     toast.classList.remove('show');
@@ -692,11 +846,14 @@
   function switchTab(tab){
     activeTab = tab;
     tabTrack.classList.toggle('active', tab === 'track');
+    tabFinish.classList.toggle('active', tab === 'finish');
     tabSettings.classList.toggle('active', tab === 'settings');
     viewTrack.classList.toggle('active', tab === 'track');
+    viewFinish.classList.toggle('active', tab === 'finish');
     viewSettings.classList.toggle('active', tab === 'settings');
   }
   tabTrack.addEventListener('click', () => switchTab('track'));
+  tabFinish.addEventListener('click', () => switchTab('finish'));
   tabSettings.addEventListener('click', () => switchTab('settings'));
 
   document.getElementById('cart-plus').addEventListener('click', async () => {
