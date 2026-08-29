@@ -78,6 +78,28 @@
   .cart-controls button:active{ background:var(--surface-2); }
 
   .grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(128px,1fr)); gap:12px; }
+
+  .size-group{ margin-bottom:22px; }
+  .size-group-header{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom:10px; padding-bottom:6px; border-bottom:1px solid var(--line);
+  }
+  .size-group-header .title{
+    display:flex; align-items:baseline; gap:8px;
+  }
+  .size-group-header .letter{
+    font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:700;
+    color:var(--accent); background:var(--surface); border:1px solid var(--line);
+    border-radius:6px; padding:2px 8px;
+  }
+  .size-group-header .name{
+    font-size:14px; text-transform:uppercase; letter-spacing:1px; color:var(--chalk-dim); font-weight:600;
+  }
+  .size-group-header .count{
+    font-size:12px; color:var(--chalk-dim); font-family:'JetBrains Mono',monospace;
+  }
+  .size-group-header .count b{ color:var(--chalk); }
+  .no-groups-msg{ color:var(--chalk-dim); font-size:13px; padding:14px 0; }
   .tile{
     position:relative; background:var(--idle); border:2px solid var(--idle-line);
     border-radius:14px; padding:14px 12px 12px; min-height:118px;
@@ -115,18 +137,7 @@
   }
   .adjust-btn:active{ background:rgba(0,0,0,0.4); }
 
-  .size-badge{
-    position:absolute; top:6px; right:6px;
-    min-width:22px; height:22px; padding:0 6px; border-radius:6px;
-    background:rgba(0,0,0,0.25); border:1px solid var(--line);
-    display:flex; align-items:center; justify-content:center;
-    font-family:'JetBrains Mono',monospace;
-    font-size:11px; font-weight:700; color:var(--chalk-dim);
-    z-index:2;
-    pointer-events:none;
-  }
-  /* when a tile is over time, the flag takes the top-right spot instead */
-  .tile.over .size-badge{ top:30px; }
+  /* size shown via group headers now; badge styles removed */
 
   /* tabs */
   .tabs{
@@ -214,9 +225,17 @@
   .sync-note{ text-align:center; font-size:11px; color:var(--chalk-dim); margin-top:22px; opacity:0.7; }
 
   @media (max-width:420px){
-    .grid{ grid-template-columns:repeat(auto-fill, minmax(100px,1fr)); }
-    .tile .num{ font-size:24px; }
-    .tile .timer{ font-size:18px; }
+    body{ padding:14px 10px 100px; }
+    .grid{ grid-template-columns:repeat(auto-fill, minmax(92px,1fr)); gap:8px; }
+    .tile{ min-height:104px; padding:12px 10px 10px; border-radius:12px; }
+    .tile .num{ font-size:22px; }
+    .tile .timer{ font-size:17px; }
+    .status-strip{ gap:6px; }
+    .status-pill{ padding:7px 10px; font-size:12px; }
+    .tabs{ gap:0; }
+    .tab-btn{ margin-right:14px; font-size:12px; }
+    .filter-row{ gap:6px; }
+    .chip{ padding:5px 10px; font-size:11px; }
   }
 </style>
 </head>
@@ -263,7 +282,7 @@
 
   <div class="size-breakdown" id="size-breakdown"></div>
 
-  <div class="grid" id="grid"></div>
+  <div id="grid-groups"></div>
 
   <p class="sync-note" style="margin-top:10px; text-align:left; opacity:0.6;">Tap a cart to start / stop it &middot; tap the ⏱ icon to set or correct its start time</p>
 
@@ -299,6 +318,7 @@
   const WARN_MS = 25*60*1000;
   const POLL_MS = 3000;
   const SIZES = ['S','M','L','XL','V','G'];
+  const SIZE_LABELS = { S:'Small', M:'Medium', L:'Large', XL:'Extra Large', V:'Variable', G:'Gravity' };
   const DEFAULT_SIZE = 'M';
 
   let session = { cart_count: 8, carts: {}, cart_sizes: {} }; // carts: { "1": {state:'running', start: epochMs} }
@@ -309,7 +329,7 @@
   let activeFilters = new Set(SIZES); // which sizes are shown in the grid
   let activeTab = 'track';
 
-  const grid = document.getElementById('grid');
+  const grid = document.getElementById('grid-groups');
   const clockEl = document.getElementById('clock');
   const statRunning = document.getElementById('stat-running');
   const statOver = document.getElementById('stat-over');
@@ -416,61 +436,99 @@
     grid.innerHTML = '';
     let runningCount = 0, overCount = 0;
 
+    // bucket cart numbers by size, preserving SIZES order
+    const buckets = {};
+    SIZES.forEach(s => buckets[s] = []);
     for(let n=1; n<=session.cart_count; n++){
       const cart = session.carts[n];
       const size = sizeOf(n);
+      buckets[size].push(n);
 
       // count towards global stats regardless of filter
       if(cart && cart.state === 'running'){
         runningCount++;
         if(tileState(Date.now() - cart.start) === 'over') overCount++;
       }
+    }
 
-      if(!activeFilters.has(size)) continue; // filtered out of the grid view
+    let anyGroupShown = false;
 
-      const tile = document.createElement('div');
-      tile.className = 'tile';
-      tile.dataset.cart = n;
+    SIZES.forEach(size => {
+      const cartNums = buckets[size];
+      if(cartNums.length === 0) return; // no carts of this size configured
+      if(!activeFilters.has(size)) return; // hidden by filter
 
-      if(cart && cart.state === 'running'){
-        const elapsed = Date.now() - cart.start;
-        const st = tileState(elapsed);
-        tile.classList.add(st);
-
-        const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
-        tile.innerHTML = `
-          <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
-          <div class="size-badge">${size}</div>
-          ${st==='over' ? '<div class="flag">Double</div>' : ''}
-          <div class="num">#${n}</div>
-          <div>
-            <div class="timer">${fmt(elapsed)}</div>
-            <div class="label">${st==='over' ? 'over time' : st==='warn' ? 'warning' : 'on track'}</div>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:${pct}%; background:${st==='over'?'var(--over)':st==='warn'?'var(--warn)':'var(--ok)'}"></div></div>
-        `;
-      } else {
-        tile.innerHTML = `
-          <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
-          <div class="size-badge">${size}</div>
-          <div class="num">#${n}</div>
-          <div>
-            <div class="timer">--:--</div>
-            <div class="label">tap to start</div>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:0%"></div></div>
-        `;
-      }
-
-      tile.addEventListener('click', (e) => {
-        if(e.target.closest('[data-adjust]')){
-          e.stopPropagation();
-          handleAdjust(n);
-          return;
-        }
-        handleTap(n);
+      anyGroupShown = true;
+      let groupRunning = 0;
+      cartNums.forEach(n => {
+        const cart = session.carts[n];
+        if(cart && cart.state === 'running') groupRunning++;
       });
-      grid.appendChild(tile);
+
+      const groupEl = document.createElement('div');
+      groupEl.className = 'size-group';
+      groupEl.innerHTML = `
+        <div class="size-group-header">
+          <div class="title">
+            <span class="letter">${size}</span>
+            <span class="name">${SIZE_LABELS[size]}</span>
+          </div>
+          <span class="count"><b>${groupRunning}</b> of ${cartNums.length} on the hill</span>
+        </div>
+        <div class="grid"></div>
+      `;
+      const groupGrid = groupEl.querySelector('.grid');
+
+      cartNums.forEach(n => {
+        const cart = session.carts[n];
+        const tile = document.createElement('div');
+        tile.className = 'tile';
+        tile.dataset.cart = n;
+
+        if(cart && cart.state === 'running'){
+          const elapsed = Date.now() - cart.start;
+          const st = tileState(elapsed);
+          tile.classList.add(st);
+
+          const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
+          tile.innerHTML = `
+            <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
+            ${st==='over' ? '<div class="flag">Double</div>' : ''}
+            <div class="num">#${n}</div>
+            <div>
+              <div class="timer">${fmt(elapsed)}</div>
+              <div class="label">${st==='over' ? 'over time' : st==='warn' ? 'warning' : 'on track'}</div>
+            </div>
+            <div class="bar-track"><div class="bar-fill" style="width:${pct}%; background:${st==='over'?'var(--over)':st==='warn'?'var(--warn)':'var(--ok)'}"></div></div>
+          `;
+        } else {
+          tile.innerHTML = `
+            <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
+            <div class="num">#${n}</div>
+            <div>
+              <div class="timer">--:--</div>
+              <div class="label">tap to start</div>
+            </div>
+            <div class="bar-track"><div class="bar-fill" style="width:0%"></div></div>
+          `;
+        }
+
+        tile.addEventListener('click', (e) => {
+          if(e.target.closest('[data-adjust]')){
+            e.stopPropagation();
+            handleAdjust(n);
+            return;
+          }
+          handleTap(n);
+        });
+        groupGrid.appendChild(tile);
+      });
+
+      grid.appendChild(groupEl);
+    });
+
+    if(!anyGroupShown){
+      grid.innerHTML = '<p class="no-groups-msg">No carts match the selected size filter.</p>';
     }
 
     statRunning.textContent = runningCount;
