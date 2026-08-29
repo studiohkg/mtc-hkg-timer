@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>Mountaincart Timer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --bg:#161d18;
+    --surface:#212b23;
+    --surface-2:#283329;
+    --line:#39463b;
+    --chalk:#f3f1e7;
+    --chalk-dim:#aab5ac;
+    --idle:#2d3830;
+    --idle-line:#4a5c4d;
+    --ok:#3f8a4f;
+    --ok-bg:#1e3324;
+    --warn:#e0a83e;
+    --warn-bg:#3a3120;
+    --over:#d4432e;
+    --over-bg:#3d2119;
+    --accent:#7fbf8a;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--chalk);
+    font-family:'Oswald',sans-serif;
+    min-height:100vh;
+    padding:18px 16px 100px;
+  }
+  .mono{font-family:'JetBrains Mono',monospace;}
+
+  .ridge{ height:34px; margin-bottom:6px; }
+  header{
+    display:flex; justify-content:space-between; align-items:flex-end;
+    margin-bottom:14px; flex-wrap:wrap; gap:10px;
+  }
+  h1{ margin:0; font-size:22px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase; color:var(--chalk); }
+  .subtitle{ margin:2px 0 0; font-size:12px; color:var(--chalk-dim); letter-spacing:1.5px; text-transform:uppercase; }
+  .clock{ font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:700; color:var(--accent); }
+
+  .conn-banner{
+    display:none;
+    background:var(--over-bg);
+    border:1px solid var(--over);
+    color:var(--chalk);
+    font-size:12px;
+    padding:8px 12px;
+    border-radius:8px;
+    margin-bottom:14px;
+  }
+  .conn-banner.show{ display:block; }
+
+  .status-strip{ display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
+  .status-pill{
+    background:var(--surface); border:1px solid var(--line); border-radius:8px;
+    padding:8px 14px; font-size:13px; display:flex; align-items:center; gap:8px;
+  }
+  .status-pill b{ font-family:'JetBrains Mono',monospace; font-size:15px; }
+  .dot{ width:8px; height:8px; border-radius:50%; display:inline-block; }
+  .dot.ok{ background:var(--ok); }
+  .dot.over{ background:var(--over); }
+
+  .cart-controls{
+    display:flex; align-items:center; gap:8px; margin-bottom:14px;
+    font-size:12px; color:var(--chalk-dim); text-transform:uppercase; letter-spacing:1px;
+  }
+  .cart-controls button{
+    width:28px; height:28px; border-radius:6px; border:1px solid var(--line);
+    background:var(--surface); color:var(--chalk); font-size:16px; cursor:pointer; line-height:1;
+  }
+  .cart-controls button:active{ background:var(--surface-2); }
+
+  .grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(128px,1fr)); gap:12px; }
+  .tile{
+    position:relative; background:var(--idle); border:2px solid var(--idle-line);
+    border-radius:14px; padding:14px 12px 12px; min-height:118px;
+    display:flex; flex-direction:column; justify-content:space-between;
+    cursor:pointer; user-select:none; overflow:hidden;
+    transition:background 0.2s, border-color 0.2s, transform 0.08s;
+  }
+  .tile:active{ transform:scale(0.96); }
+  .tile .num{ font-size:30px; font-weight:700; line-height:1; }
+  .tile .label{ font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--chalk-dim); }
+  .tile .timer{ font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:700; }
+  .tile .bar-track{ position:absolute; left:0; bottom:0; height:5px; width:100%; background:rgba(0,0,0,0.25); }
+  .tile .bar-fill{ height:100%; width:0%; background:var(--ok); transition:width 1s linear, background 0.3s; }
+
+  .tile.running{ background:var(--ok-bg); border-color:var(--ok); }
+  .tile.warn{ background:var(--warn-bg); border-color:var(--warn); }
+  .tile.over{ background:var(--over-bg); border-color:var(--over); animation:pulse 1.4s infinite; }
+  @keyframes pulse{ 0%,100%{box-shadow:0 0 0 rgba(212,67,46,0);} 50%{box-shadow:0 0 0 5px rgba(212,67,46,0.15);} }
+  .tile.over .timer, .tile.over .num{ color:var(--over); }
+  .tile.warn .timer, .tile.warn .num{ color:var(--warn); }
+  .tile.running .timer, .tile.running .num{ color:var(--ok); }
+
+  .flag{
+    position:absolute; top:8px; right:8px; font-size:9px; font-weight:700;
+    letter-spacing:0.5px; text-transform:uppercase; background:var(--over);
+    color:var(--chalk); padding:2px 6px; border-radius:4px;
+  }
+  .adjust-btn{
+    position:absolute; top:6px; left:6px;
+    width:22px; height:22px; border-radius:6px;
+    background:rgba(0,0,0,0.25); border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; color:var(--chalk-dim);
+    z-index:2;
+  }
+  .adjust-btn:active{ background:rgba(0,0,0,0.4); }
+
+  .size-badge{
+    position:absolute; top:6px; right:6px;
+    min-width:22px; height:22px; padding:0 6px; border-radius:6px;
+    background:rgba(0,0,0,0.25); border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px; font-weight:700; color:var(--chalk-dim);
+    z-index:2;
+    pointer-events:none;
+  }
+  /* when a tile is over time, the flag takes the top-right spot instead */
+  .tile.over .size-badge{ top:30px; }
+
+  /* tabs */
+  .tabs{
+    display:flex; gap:6px; margin-bottom:16px;
+    border-bottom:1px solid var(--line);
+  }
+  .tab-btn{
+    background:none; border:none; color:var(--chalk-dim);
+    font-family:'Oswald',sans-serif; font-size:13px; font-weight:600;
+    text-transform:uppercase; letter-spacing:1px;
+    padding:10px 4px; margin-right:18px; cursor:pointer;
+    border-bottom:2px solid transparent;
+  }
+  .tab-btn.active{ color:var(--chalk); border-bottom-color:var(--accent); }
+  .view{ display:none; }
+  .view.active{ display:block; }
+
+  /* filter chips */
+  .filter-row{
+    display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; align-items:center;
+  }
+  .filter-label{
+    font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--chalk-dim); margin-right:2px;
+  }
+  .chip{
+    background:var(--surface); border:1px solid var(--line); color:var(--chalk-dim);
+    font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700;
+    padding:6px 12px; border-radius:16px; cursor:pointer;
+  }
+  .chip.on{ background:var(--ok-bg); border-color:var(--ok); color:var(--accent); }
+
+  .size-breakdown{
+    font-size:12px; color:var(--chalk-dim); margin-bottom:16px;
+  }
+  .size-breakdown b{ color:var(--chalk); font-family:'JetBrains Mono',monospace; }
+
+  /* settings view */
+  .settings-intro{
+    font-size:13px; color:var(--chalk-dim); margin-bottom:18px; line-height:1.5;
+  }
+  .settings-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:12px 4px; border-bottom:1px solid var(--line);
+  }
+  .settings-row .num{ font-size:18px; font-weight:700; }
+  .size-select-group{ display:flex; gap:6px; flex-wrap:wrap; }
+  .size-select-btn{
+    background:var(--surface); border:1px solid var(--line); color:var(--chalk-dim);
+    font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700;
+    width:34px; height:34px; border-radius:8px; cursor:pointer;
+  }
+  .size-select-btn.selected{ background:var(--ok-bg); border-color:var(--ok); color:var(--accent); }
+
+  .log-section{ margin-top:34px; }
+  .log-header{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .log-header h2{ font-size:14px; text-transform:uppercase; letter-spacing:1.5px; color:var(--chalk-dim); margin:0; font-weight:600; }
+  .clear-btn{
+    background:none; border:1px solid var(--line); color:var(--chalk-dim);
+    font-size:11px; text-transform:uppercase; letter-spacing:1px; padding:6px 10px;
+    border-radius:6px; cursor:pointer;
+  }
+  .clear-btn:active{ background:var(--surface); }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ text-align:left; padding:8px 8px; border-bottom:1px solid var(--line); }
+  th{ color:var(--chalk-dim); font-weight:600; text-transform:uppercase; font-size:10px; letter-spacing:1px; }
+  td.dur{ font-family:'JetBrains Mono',monospace; }
+  .tag{ font-size:10px; font-weight:700; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:0.5px; }
+  .tag.normal{ background:var(--ok-bg); color:var(--ok); }
+  .tag.double{ background:var(--over-bg); color:var(--over); }
+  .empty-log{ color:var(--chalk-dim); font-size:13px; padding:14px 0; }
+
+  .toast{
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(20px);
+    background:var(--surface-2); border:1px solid var(--line); color:var(--chalk);
+    padding:12px 16px; border-radius:10px; font-size:13px; display:flex; align-items:center; gap:14px;
+    opacity:0; pointer-events:none; transition:opacity 0.25s, transform 0.25s; z-index:50;
+    box-shadow:0 8px 24px rgba(0,0,0,0.4); max-width:90vw;
+  }
+  .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto; }
+  .toast button{
+    background:none; border:1px solid var(--accent); color:var(--accent); padding:5px 10px;
+    border-radius:6px; font-size:12px; text-transform:uppercase; letter-spacing:0.5px; cursor:pointer; white-space:nowrap;
+  }
+
+  .sync-note{ text-align:center; font-size:11px; color:var(--chalk-dim); margin-top:22px; opacity:0.7; }
+
+  @media (max-width:420px){
+    .grid{ grid-template-columns:repeat(auto-fill, minmax(100px,1fr)); }
+    .tile .num{ font-size:24px; }
+    .tile .timer{ font-size:18px; }
+  }
+</style>
+</head>
+<body>
+
+<svg class="ridge" viewBox="0 0 400 34" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+  <polyline points="0,30 40,14 70,24 110,6 150,20 190,10 230,26 270,12 310,22 345,4 400,18"
+    fill="none" stroke="#4a5c4d" stroke-width="2"/>
+</svg>
+
+<header>
+  <div>
+    <h1>Mountaincart Timer</h1>
+    <p class="subtitle">30 min run &middot; over time = double price</p>
+  </div>
+  <div class="clock mono" id="clock">--:--:--</div>
+</header>
+
+<div class="conn-banner" id="conn-banner">Can't reach the database right now &mdash; changes may not save. Check your connection.</div>
+
+<div class="tabs">
+  <button class="tab-btn active" id="tab-track" data-tab="track">Track</button>
+  <button class="tab-btn" id="tab-settings" data-tab="settings">Settings</button>
+</div>
+
+<div class="view active" id="view-track">
+
+  <div class="status-strip">
+    <div class="status-pill"><span class="dot ok"></span>On the hill <b id="stat-running">0</b></div>
+    <div class="status-pill"><span class="dot over"></span>Over 30 min <b id="stat-over">0</b></div>
+    <div class="status-pill">Rides today <b class="mono" id="stat-total">0</b></div>
+  </div>
+
+  <div class="cart-controls">
+    Carts
+    <button id="cart-minus">&minus;</button>
+    <span class="mono" id="cart-count-display">8</span>
+    <button id="cart-plus">+</button>
+  </div>
+
+  <div class="filter-row" id="filter-row">
+    <span class="filter-label">Show sizes:</span>
+  </div>
+
+  <div class="size-breakdown" id="size-breakdown"></div>
+
+  <div class="grid" id="grid"></div>
+
+  <p class="sync-note" style="margin-top:10px; text-align:left; opacity:0.6;">Tap a cart to start / stop it &middot; tap the ⏱ icon to set or correct its start time</p>
+
+  <div class="log-section">
+    <div class="log-header">
+      <h2>Today's rides</h2>
+      <button class="clear-btn" id="clear-log">Clear log</button>
+    </div>
+    <div id="log-wrap"></div>
+  </div>
+
+  <p class="sync-note">Synced live across every device &middot; powered by Supabase</p>
+
+</div>
+
+<div class="view" id="view-settings">
+  <p class="settings-intro">Set each cart's size here. This is a fixed property of the physical cart — it stays the same across rides until you change it here.</p>
+  <div id="settings-list"></div>
+</div>
+
+<div class="toast" id="toast">
+  <span id="toast-text"></span>
+  <button id="toast-undo">Undo</button>
+</div>
+
+<script>
+(function(){
+  const SUPABASE_URL = "https://gmfcvrdnrjxywhtmgvvo.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdtZmN2cmRucmp4eXdodG1ndnZvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY4MDQ0NDcsImV4cCI6MjEwMjM4MDQ0N30.yDRNUh-I2MeLg1clup25Bg5PrH4dKA7RACK54gA5t_g";
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const LIMIT_MS = 30*60*1000;
+  const WARN_MS = 25*60*1000;
+  const POLL_MS = 3000;
+  const SIZES = ['S','M','L','XL','V','G'];
+  const DEFAULT_SIZE = 'M';
+
+  let session = { cart_count: 8, carts: {}, cart_sizes: {} }; // carts: { "1": {state:'running', start: epochMs} }
+  let log = []; // {id, cart, start, end, durationSec, overtime}
+  let undoData = null;
+  let undoTimer = null;
+  let saving = false;
+  let activeFilters = new Set(SIZES); // which sizes are shown in the grid
+  let activeTab = 'track';
+
+  const grid = document.getElementById('grid');
+  const clockEl = document.getElementById('clock');
+  const statRunning = document.getElementById('stat-running');
+  const statOver = document.getElementById('stat-over');
+  const statTotal = document.getElementById('stat-total');
+  const cartCountDisplay = document.getElementById('cart-count-display');
+  const logWrap = document.getElementById('log-wrap');
+  const toast = document.getElementById('toast');
+  const toastText = document.getElementById('toast-text');
+  const toastUndo = document.getElementById('toast-undo');
+  const connBanner = document.getElementById('conn-banner');
+  const filterRow = document.getElementById('filter-row');
+  const sizeBreakdown = document.getElementById('size-breakdown');
+  const settingsList = document.getElementById('settings-list');
+  const tabTrack = document.getElementById('tab-track');
+  const tabSettings = document.getElementById('tab-settings');
+  const viewTrack = document.getElementById('view-track');
+  const viewSettings = document.getElementById('view-settings');
+
+  function fmt(ms){
+    const total = Math.max(0, Math.floor(ms/1000));
+    const m = Math.floor(total/60);
+    const s = total%60;
+    return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  }
+  function fmtClockTime(iso){
+    return new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  }
+  function showConnIssue(has){
+    connBanner.classList.toggle('show', !!has);
+  }
+
+  async function loadSession(){
+    const { data, error } = await sb.from('mountaincart_session').select('*').eq('id',1).single();
+    if(error){ showConnIssue(true); return; }
+    showConnIssue(false);
+    session.cart_count = data.cart_count;
+    session.carts = data.carts || {};
+    session.cart_sizes = data.cart_sizes || {};
+  }
+
+  async function loadLog(){
+    const { data, error } = await sb.from('mountaincart_rides')
+      .select('*')
+      .order('created_at', { ascending:false })
+      .limit(50);
+    if(error){ showConnIssue(true); return; }
+    showConnIssue(false);
+    log = (data || []).map(r => ({
+      id: r.id, cart: r.cart, start: r.started_at, end: r.ended_at,
+      durationSec: r.duration_seconds, overtime: r.overtime
+    }));
+  }
+
+  async function saveSession(){
+    saving = true;
+    const { error } = await sb.from('mountaincart_session')
+      .update({ cart_count: session.cart_count, carts: session.carts, cart_sizes: session.cart_sizes, updated_at: new Date().toISOString() })
+      .eq('id', 1);
+    saving = false;
+    if(error){ showConnIssue(true); return false; }
+    showConnIssue(false);
+    return true;
+  }
+
+  async function insertRide(entry){
+    const { data, error } = await sb.from('mountaincart_rides').insert({
+      cart: entry.cart,
+      started_at: new Date(entry.start).toISOString(),
+      ended_at: new Date(entry.end).toISOString(),
+      duration_seconds: entry.durationSec,
+      overtime: entry.overtime
+    }).select().single();
+    if(error){ showConnIssue(true); return null; }
+    showConnIssue(false);
+    return data.id;
+  }
+
+  async function deleteRide(id){
+    await sb.from('mountaincart_rides').delete().eq('id', id);
+  }
+
+  async function pollState(){
+    if(saving) return;
+    await loadSession();
+    await loadLog();
+    render();
+  }
+
+  function tileState(elapsed){
+    if(elapsed >= LIMIT_MS) return 'over';
+    if(elapsed >= WARN_MS) return 'warn';
+    return 'running';
+  }
+
+  function sizeOf(n){
+    return session.cart_sizes[n] || DEFAULT_SIZE;
+  }
+
+  function render(){
+    cartCountDisplay.textContent = session.cart_count;
+    renderFilterChips();
+    renderSizeBreakdown();
+
+    grid.innerHTML = '';
+    let runningCount = 0, overCount = 0;
+
+    for(let n=1; n<=session.cart_count; n++){
+      const cart = session.carts[n];
+      const size = sizeOf(n);
+
+      // count towards global stats regardless of filter
+      if(cart && cart.state === 'running'){
+        runningCount++;
+        if(tileState(Date.now() - cart.start) === 'over') overCount++;
+      }
+
+      if(!activeFilters.has(size)) continue; // filtered out of the grid view
+
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.dataset.cart = n;
+
+      if(cart && cart.state === 'running'){
+        const elapsed = Date.now() - cart.start;
+        const st = tileState(elapsed);
+        tile.classList.add(st);
+
+        const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
+        tile.innerHTML = `
+          <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
+          <div class="size-badge">${size}</div>
+          ${st==='over' ? '<div class="flag">Double</div>' : ''}
+          <div class="num">#${n}</div>
+          <div>
+            <div class="timer">${fmt(elapsed)}</div>
+            <div class="label">${st==='over' ? 'over time' : st==='warn' ? 'warning' : 'on track'}</div>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%; background:${st==='over'?'var(--over)':st==='warn'?'var(--warn)':'var(--ok)'}"></div></div>
+        `;
+      } else {
+        tile.innerHTML = `
+          <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
+          <div class="size-badge">${size}</div>
+          <div class="num">#${n}</div>
+          <div>
+            <div class="timer">--:--</div>
+            <div class="label">tap to start</div>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:0%"></div></div>
+        `;
+      }
+
+      tile.addEventListener('click', (e) => {
+        if(e.target.closest('[data-adjust]')){
+          e.stopPropagation();
+          handleAdjust(n);
+          return;
+        }
+        handleTap(n);
+      });
+      grid.appendChild(tile);
+    }
+
+    statRunning.textContent = runningCount;
+    statOver.textContent = overCount;
+    renderLog();
+    renderSettings();
+  }
+
+  function renderFilterChips(){
+    const allOn = SIZES.every(s => activeFilters.has(s));
+    let html = `<button class="chip ${allOn ? 'on' : ''}" data-filter="ALL">All</button>`;
+    SIZES.forEach(s => {
+      html += `<button class="chip ${activeFilters.has(s) ? 'on' : ''}" data-filter="${s}">${s}</button>`;
+    });
+    filterRow.innerHTML = `<span class="filter-label">Show sizes:</span>` + html;
+    filterRow.querySelectorAll('[data-filter]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const f = btn.dataset.filter;
+        if(f === 'ALL'){
+          activeFilters = new Set(SIZES);
+        } else if(activeFilters.has(f)){
+          activeFilters.delete(f);
+        } else {
+          activeFilters.add(f);
+        }
+        render();
+      });
+    });
+  }
+
+  function renderSizeBreakdown(){
+    const counts = {};
+    SIZES.forEach(s => counts[s] = 0);
+    for(let n=1; n<=session.cart_count; n++){
+      const cart = session.carts[n];
+      if(cart && cart.state === 'running'){
+        counts[sizeOf(n)] = (counts[sizeOf(n)] || 0) + 1;
+      }
+    }
+    const parts = SIZES.map(s => `${s} <b>${counts[s]}</b>`).join(' &middot; ');
+    sizeBreakdown.innerHTML = `On the track by size: ${parts}`;
+  }
+
+  function renderSettings(){
+    let html = '';
+    for(let n=1; n<=session.cart_count; n++){
+      const current = sizeOf(n);
+      html += `<div class="settings-row"><div class="num">#${n}</div><div class="size-select-group" data-cart="${n}">`;
+      SIZES.forEach(s => {
+        html += `<button class="size-select-btn ${s===current?'selected':''}" data-set-size="${s}">${s}</button>`;
+      });
+      html += `</div></div>`;
+    }
+    settingsList.innerHTML = html;
+    settingsList.querySelectorAll('.size-select-group').forEach(group => {
+      const n = group.dataset.cart;
+      group.querySelectorAll('[data-set-size]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          session.cart_sizes[n] = btn.dataset.setSize;
+          render();
+          await saveSession();
+        });
+      });
+    });
+  }
+
+  function renderLog(){
+    statTotal.textContent = log.length;
+    if(log.length === 0){
+      logWrap.innerHTML = '<p class="empty-log">No completed rides yet today.</p>';
+      return;
+    }
+    const rows = log.map(entry => `
+      <tr>
+        <td>#${entry.cart}</td>
+        <td class="mono">${fmtClockTime(entry.start)}</td>
+        <td class="mono">${fmtClockTime(entry.end)}</td>
+        <td class="dur">${fmt(entry.durationSec*1000)}</td>
+        <td><span class="tag ${entry.overtime?'double':'normal'}">${entry.overtime?'Double':'Normal'}</span></td>
+      </tr>
+    `).join('');
+    logWrap.innerHTML = `
+      <table>
+        <thead><tr><th>Cart</th><th>Start</th><th>Finish</th><th>Duration</th><th>Charge</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  async function handleTap(n){
+    const cart = session.carts[n];
+    if(!cart || cart.state !== 'running'){
+      // START now
+      session.carts[n] = { state:'running', start: Date.now() };
+      render();
+      await saveSession();
+    } else {
+      // STOP now
+      const start = cart.start;
+      const end = Date.now();
+      const durationSec = Math.round((end-start)/1000);
+      const overtime = (end-start) >= LIMIT_MS;
+      const entry = { cart:n, start, end, durationSec, overtime };
+
+      session.carts[n] = { state:'idle' };
+      render();
+      await saveSession();
+      const id = await insertRide(entry);
+      entry.id = id;
+      log.unshift(entry);
+      renderLog();
+      showUndo(entry);
+    }
+  }
+
+  async function handleAdjust(n){
+    const cart = session.carts[n];
+    let promptMsg, currentMinutesAgo = 0;
+    if(cart && cart.state === 'running'){
+      currentMinutesAgo = Math.round((Date.now() - cart.start)/60000);
+      promptMsg = `Cart #${n} is running. It currently shows as started ${currentMinutesAgo} min ago.\n\nEnter the correct number of minutes ago it actually left (0 = just now):`;
+    } else {
+      promptMsg = `Cart #${n} shows as idle. If it actually left already, enter how many minutes ago it left (this starts the timer retroactively):`;
+    }
+    const input = prompt(promptMsg, String(currentMinutesAgo));
+    if(input === null) return; // cancelled
+    const minutesAgo = parseFloat(input);
+    if(isNaN(minutesAgo) || minutesAgo < 0){
+      alert('Please enter a number of minutes, 0 or higher.');
+      return;
+    }
+    session.carts[n] = { state:'running', start: Date.now() - Math.round(minutesAgo*60000) };
+    render();
+    await saveSession();
+  }
+
+  function showUndo(entry){
+    if(undoTimer) clearTimeout(undoTimer);
+    undoData = entry;
+    toastText.textContent = `Cart #${entry.cart} stopped \u2014 ${fmt(entry.durationSec*1000)}${entry.overtime ? ' (double)' : ''}`;
+    toast.classList.add('show');
+    undoTimer = setTimeout(() => {
+      toast.classList.remove('show');
+      undoData = null;
+    }, 6000);
+  }
+
+  toastUndo.addEventListener('click', async () => {
+    if(!undoData) return;
+    const idx = log.findIndex(e => e.id === undoData.id);
+    if(idx > -1) log.splice(idx,1);
+    if(undoData.id != null) await deleteRide(undoData.id);
+    session.carts[undoData.cart] = { state:'running', start: undoData.start };
+    render();
+    await saveSession();
+    toast.classList.remove('show');
+    undoData = null;
+    if(undoTimer) clearTimeout(undoTimer);
+  });
+
+  function switchTab(tab){
+    activeTab = tab;
+    tabTrack.classList.toggle('active', tab === 'track');
+    tabSettings.classList.toggle('active', tab === 'settings');
+    viewTrack.classList.toggle('active', tab === 'track');
+    viewSettings.classList.toggle('active', tab === 'settings');
+  }
+  tabTrack.addEventListener('click', () => switchTab('track'));
+  tabSettings.addEventListener('click', () => switchTab('settings'));
+
+  document.getElementById('cart-plus').addEventListener('click', async () => {
+    session.cart_count = Math.min(40, session.cart_count+1);
+    render();
+    await saveSession();
+  });
+  document.getElementById('cart-minus').addEventListener('click', async () => {
+    session.cart_count = Math.max(1, session.cart_count-1);
+    if(session.carts[session.cart_count+1]) delete session.carts[session.cart_count+1];
+    render();
+    await saveSession();
+  });
+
+  document.getElementById('clear-log').addEventListener('click', async () => {
+    if(!confirm('Clear all completed rides from today\'s log? This cannot be undone.')) return;
+    const ids = log.map(e => e.id).filter(id => id != null);
+    log = [];
+    renderLog();
+    if(ids.length){
+      await sb.from('mountaincart_rides').delete().in('id', ids);
+    }
+  });
+
+  // live per-second tick for running tiles (no network calls)
+  setInterval(() => {
+    clockEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    let needsFullRender = false;
+    document.querySelectorAll('.tile').forEach(tile => {
+      const n = tile.dataset.cart;
+      const cart = session.carts[n];
+      if(cart && cart.state === 'running'){
+        const elapsed = Date.now() - cart.start;
+        const st = tileState(elapsed);
+        const timerEl = tile.querySelector('.timer');
+        if(timerEl) timerEl.textContent = fmt(elapsed);
+        if(!tile.classList.contains(st)) needsFullRender = true;
+        const barFill = tile.querySelector('.bar-fill');
+        if(barFill){
+          const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
+          barFill.style.width = pct + '%';
+        }
+      }
+    });
+    if(needsFullRender) render();
+  }, 1000);
+
+  setInterval(pollState, POLL_MS);
+
+  (async function init(){
+    await loadSession();
+    await loadLog();
+    render();
+  })();
+})();
+</script>
+
+</body>
+</html>
