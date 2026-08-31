@@ -24,6 +24,9 @@
     --over:#d4432e;
     --over-bg:#3d2119;
     --accent:#7fbf8a;
+    --stale:#a970e0;
+    --stale-bg:#2c2340;
+    --stale-dim:#c9a6ef;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0;padding:0;}
@@ -177,18 +180,23 @@
   .tile.warn .timer, .tile.warn .num{ color:var(--warn); }
   .tile.running .timer, .tile.running .num{ color:var(--ok); }
 
-  .flag{
-    position:absolute; top:8px; right:8px; font-size:9px; font-weight:700;
-    letter-spacing:0.5px; text-transform:uppercase; background:var(--over);
-    color:var(--chalk); padding:2px 6px; border-radius:4px;
+  .tile.stale{ background:var(--stale-bg); border-color:var(--stale); }
+  .tile.stale .label{ color:var(--stale-dim); }
+
+  .tile-header{
+    display:flex; align-items:flex-start; justify-content:space-between;
+    gap:8px; margin-bottom:2px;
+  }
+  .flag-inline{
+    font-size:9px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;
+    background:var(--over); color:var(--chalk); padding:2px 6px; border-radius:4px;
+    margin-left:6px; white-space:nowrap;
   }
   .adjust-btn{
-    position:absolute; top:6px; left:6px;
-    width:22px; height:22px; border-radius:6px;
+    width:24px; height:24px; border-radius:6px; flex-shrink:0;
     background:rgba(0,0,0,0.25); border:1px solid var(--line);
     display:flex; align-items:center; justify-content:center;
-    font-size:12px; color:var(--chalk-dim);
-    z-index:2;
+    font-size:13px; color:var(--chalk-dim);
   }
   .adjust-btn:active{ background:rgba(0,0,0,0.4); }
 
@@ -386,6 +394,8 @@
   // If a cart is started more than this long after the last one, it auto-rolls
   // into a new group. Staff can also close a group manually at any time.
   const GROUP_WINDOW_MS = 3*60*1000;
+  // carts idle longer than this get a purple highlight so staff notice unused ones
+  const STALE_MS = 3*24*60*60*1000;
   const POLL_MS = 3000;
   const SIZES = ['S','M','L','XL','V','G'];
   const SIZE_LABELS = { S:'Small', M:'Medium', L:'Large', XL:'Extra Large', V:'Variable', G:'Gravity' };
@@ -393,6 +403,7 @@
 
   let session = { cart_count: 8, carts: {}, cart_sizes: {}, current_group_id: 1, last_group_start_at: null };
   let log = []; // {id, cart, start, end, durationSec, overtime}
+  let lastUsed = {}; // { "1": isoStringOfLastRideEnd, ... }
   let undoData = null;
   let undoTimer = null;
   let saving = false;
@@ -460,6 +471,13 @@
     }));
   }
 
+  async function loadLastUsed(){
+    const { data, error } = await sb.from('mountaincart_last_used').select('*');
+    if(error){ return; } // non-critical, don't trip the connection banner for this
+    lastUsed = {};
+    (data || []).forEach(row => { lastUsed[row.cart] = row.last_used; });
+  }
+
   async function saveSession(){
     saving = true;
     const { error } = await sb.from('mountaincart_session')
@@ -502,6 +520,7 @@
     if(saving) return;
     await loadSession();
     await loadLog();
+    await loadLastUsed();
     render();
   }
 
@@ -513,6 +532,18 @@
 
   function sizeOf(n){
     return session.cart_sizes[n] || DEFAULT_SIZE;
+  }
+
+  function daysIdle(n){
+    const last = lastUsed[n];
+    if(!last) return null; // never used — treated as stale, but no exact day count to show
+    return Math.floor((Date.now() - new Date(last).getTime()) / (24*60*60*1000));
+  }
+
+  function isStale(n){
+    const last = lastUsed[n];
+    if(!last) return true; // never recorded a ride — definitely counts as unused
+    return (Date.now() - new Date(last).getTime()) > STALE_MS;
   }
 
   function render(){
@@ -580,22 +611,31 @@
 
           const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
           tile.innerHTML = `
-            <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
-            ${st==='over' ? '<div class="flag">Double</div>' : ''}
-            <div class="num">#${n}</div>
+            <div class="tile-header">
+              <div class="num">#${n}</div>
+              <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
+            </div>
             <div>
               <div class="timer">${fmt(elapsed)}</div>
-              <div class="label">${st==='over' ? 'over time' : st==='warn' ? 'warning' : 'on track'}</div>
+              <div class="label">${st==='over' ? 'over time' : st==='warn' ? 'warning' : 'on track'}${st==='over' ? '<span class="flag-inline">Double</span>' : ''}</div>
             </div>
             <div class="bar-track"><div class="bar-fill" style="width:${pct}%; background:${st==='over'?'var(--over)':st==='warn'?'var(--warn)':'var(--ok)'}"></div></div>
           `;
         } else {
+          const stale = isStale(n);
+          if(stale) tile.classList.add('stale');
+          const idleDays = daysIdle(n);
+          const idleLabel = stale
+            ? (idleDays === null ? 'never used' : `unused ${idleDays}d`)
+            : 'tap to start';
           tile.innerHTML = `
-            <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
-            <div class="num">#${n}</div>
+            <div class="tile-header">
+              <div class="num">#${n}</div>
+              <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
+            </div>
             <div>
               <div class="timer">--:--</div>
-              <div class="label">tap to start</div>
+              <div class="label">${idleLabel}</div>
             </div>
             <div class="bar-track"><div class="bar-fill" style="width:0%"></div></div>
           `;
@@ -964,6 +1004,7 @@
   (async function init(){
     await loadSession();
     await loadLog();
+    await loadLastUsed();
     render();
   })();
 })();
