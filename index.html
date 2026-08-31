@@ -241,11 +241,46 @@
   .settings-intro{
     font-size:13px; color:var(--chalk-dim); margin-bottom:18px; line-height:1.5;
   }
+  .auto-hide-row{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    background:var(--surface); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; margin-bottom:18px;
+  }
+  .auto-hide-label{ font-size:13px; color:var(--chalk-dim); line-height:1.4; }
+  .toggle-pill{
+    background:var(--idle); border:1px solid var(--idle-line); color:var(--chalk-dim);
+    font-family:'Oswald',sans-serif; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;
+    font-size:12px; padding:8px 16px; border-radius:20px; cursor:pointer; white-space:nowrap; flex-shrink:0;
+  }
+  .toggle-pill.on{ background:var(--stale-bg); border-color:var(--stale); color:var(--stale-dim); }
+
   .settings-row{
-    display:flex; align-items:center; justify-content:space-between;
-    padding:12px 4px; border-bottom:1px solid var(--line);
+    padding:14px 4px; border-bottom:1px solid var(--line);
+  }
+  .settings-row-top{
+    display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;
   }
   .settings-row .num{ font-size:18px; font-weight:700; }
+  .settings-badges{ display:flex; gap:6px; align-items:center; }
+  .badge-stale{
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;
+    background:var(--stale-bg); color:var(--stale-dim); border:1px solid var(--stale);
+    padding:3px 8px; border-radius:4px;
+  }
+  .badge-hidden{
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;
+    background:var(--surface-2); color:var(--chalk-dim); border:1px solid var(--line);
+    padding:3px 8px; border-radius:4px;
+  }
+  .settings-row-bottom{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; flex-wrap:wrap;
+  }
+  .hide-toggle-btn{
+    background:var(--surface); border:1px solid var(--line); color:var(--chalk-dim);
+    font-family:'Oswald',sans-serif; font-size:11px; text-transform:uppercase; letter-spacing:0.5px;
+    padding:7px 12px; border-radius:6px; cursor:pointer; white-space:nowrap;
+  }
+  .hide-toggle-btn.is-hidden{ background:var(--over-bg); border-color:var(--over); color:var(--over); }
   .size-select-group{ display:flex; gap:6px; flex-wrap:wrap; }
   .size-select-btn{
     background:var(--surface); border:1px solid var(--line); color:var(--chalk-dim);
@@ -375,6 +410,12 @@
 
 <div class="view" id="view-settings">
   <p class="settings-intro">Set each cart's size here. This is a fixed property of the physical cart — it stays the same across rides until you change it here.</p>
+
+  <div class="auto-hide-row">
+    <span class="auto-hide-label">Auto-hide unused carts (purple, 3+ days idle) from the overview</span>
+    <button id="auto-hide-toggle" class="toggle-pill">Off</button>
+  </div>
+
   <div id="settings-list"></div>
 </div>
 
@@ -401,7 +442,7 @@
   const SIZE_LABELS = { S:'Small', M:'Medium', L:'Large', XL:'Extra Large', V:'Variable', G:'Gravity' };
   const DEFAULT_SIZE = 'M';
 
-  let session = { cart_count: 8, carts: {}, cart_sizes: {}, current_group_id: 1, last_group_start_at: null };
+  let session = { cart_count: 8, carts: {}, cart_sizes: {}, current_group_id: 1, last_group_start_at: null, cart_hidden: {}, auto_hide_stale: false };
   let log = []; // {id, cart, start, end, durationSec, overtime}
   let lastUsed = {}; // { "1": isoStringOfLastRideEnd, ... }
   let undoData = null;
@@ -456,6 +497,8 @@
     session.cart_sizes = data.cart_sizes || {};
     session.current_group_id = data.current_group_id || 1;
     session.last_group_start_at = data.last_group_start_at || null;
+    session.cart_hidden = data.cart_hidden || {};
+    session.auto_hide_stale = !!data.auto_hide_stale;
   }
 
   async function loadLog(){
@@ -487,6 +530,8 @@
         cart_sizes: session.cart_sizes,
         current_group_id: session.current_group_id,
         last_group_start_at: session.last_group_start_at,
+        cart_hidden: session.cart_hidden,
+        auto_hide_stale: session.auto_hide_stale,
         updated_at: new Date().toISOString()
       })
       .eq('id', 1);
@@ -546,6 +591,14 @@
     return (Date.now() - new Date(last).getTime()) > STALE_MS;
   }
 
+  function isHiddenFromOverview(n){
+    const cart = session.carts[n];
+    if(cart && cart.state === 'running') return false; // never hide a cart mid-ride
+    if(session.cart_hidden[n]) return true;
+    if(session.auto_hide_stale && isStale(n)) return true;
+    return false;
+  }
+
   function render(){
     cartCountDisplay.textContent = session.cart_count;
     renderFilterChips();
@@ -561,13 +614,15 @@
     for(let n=1; n<=session.cart_count; n++){
       const cart = session.carts[n];
       const size = sizeOf(n);
-      buckets[size].push(n);
 
-      // count towards global stats regardless of filter
+      // count towards global stats regardless of filter or visibility
       if(cart && cart.state === 'running'){
         runningCount++;
         if(tileState(Date.now() - cart.start) === 'over') overCount++;
       }
+
+      if(isHiddenFromOverview(n)) continue; // manually hidden or auto-hidden as stale
+      buckets[size].push(n);
     }
 
     let anyGroupShown = false;
@@ -713,14 +768,37 @@
   }
 
   function renderSettings(){
+    // reflect the auto-hide toggle state
+    const autoHideBtn = document.getElementById('auto-hide-toggle');
+    autoHideBtn.textContent = session.auto_hide_stale ? 'On' : 'Off';
+    autoHideBtn.classList.toggle('on', session.auto_hide_stale);
+
     let html = '';
     for(let n=1; n<=session.cart_count; n++){
       const current = sizeOf(n);
-      html += `<div class="settings-row"><div class="num">#${n}</div><div class="size-select-group" data-cart="${n}">`;
+      const stale = isStale(n);
+      const hiddenManually = !!session.cart_hidden[n];
+      const effectivelyHidden = isHiddenFromOverview(n);
+      const idleDays = daysIdle(n);
+      const staleText = idleDays === null ? 'Never used' : `Unused ${idleDays}d`;
+
+      html += `<div class="settings-row">
+        <div class="settings-row-top">
+          <div class="num">#${n}</div>
+          <div class="settings-badges">
+            ${stale ? `<span class="badge-stale">${staleText}</span>` : ''}
+            ${effectivelyHidden ? `<span class="badge-hidden">Hidden</span>` : ''}
+          </div>
+        </div>
+        <div class="size-select-group" data-cart="${n}">`;
       SIZES.forEach(s => {
         html += `<button class="size-select-btn ${s===current?'selected':''}" data-set-size="${s}">${s}</button>`;
       });
-      html += `</div></div>`;
+      html += `</div>
+        <div class="settings-row-bottom">
+          <button class="hide-toggle-btn ${hiddenManually?'is-hidden':''}" data-hide-cart="${n}">${hiddenManually ? 'Show in overview' : 'Hide from overview'}</button>
+        </div>
+      </div>`;
     }
     settingsList.innerHTML = html;
     settingsList.querySelectorAll('.size-select-group').forEach(group => {
@@ -731,6 +809,18 @@
           render();
           await saveSession();
         });
+      });
+    });
+    settingsList.querySelectorAll('[data-hide-cart]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const n = btn.dataset.hideCart;
+        if(session.cart_hidden[n]){
+          delete session.cart_hidden[n];
+        } else {
+          session.cart_hidden[n] = true;
+        }
+        render();
+        await saveSession();
       });
     });
   }
@@ -961,6 +1051,12 @@
   });
 
   document.getElementById('new-group-btn').addEventListener('click', () => startNewGroup());
+
+  document.getElementById('auto-hide-toggle').addEventListener('click', async () => {
+    session.auto_hide_stale = !session.auto_hide_stale;
+    render();
+    await saveSession();
+  });
 
   document.getElementById('clear-log').addEventListener('click', async () => {
     if(!confirm('Clear all completed rides from today\'s log? This cannot be undone.')) return;
