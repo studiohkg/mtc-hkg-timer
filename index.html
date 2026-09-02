@@ -261,6 +261,21 @@
     display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;
   }
   .settings-row .num{ font-size:18px; font-weight:700; }
+  .cart-number-wrap{ display:flex; align-items:center; gap:4px; }
+  .cart-number-wrap .hash{ font-size:18px; font-weight:700; color:var(--chalk-dim); }
+  .cart-number-input{
+    background:var(--surface); border:1px solid var(--line); color:var(--chalk);
+    font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700;
+    width:64px; padding:6px 8px; border-radius:8px;
+  }
+  .cart-number-input:focus{ outline:none; border-color:var(--accent); }
+  .note-input{
+    display:block; width:100%; background:var(--surface); border:1px solid var(--line);
+    color:var(--chalk); font-family:'Oswald',sans-serif; font-size:13px;
+    padding:8px 10px; border-radius:8px; margin-bottom:12px;
+  }
+  .note-input::placeholder{ color:var(--chalk-dim); opacity:0.7; }
+  .note-input:focus{ outline:none; border-color:var(--accent); }
   .settings-badges{ display:flex; gap:6px; align-items:center; }
   .badge-stale{
     font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;
@@ -442,7 +457,7 @@
   const SIZE_LABELS = { S:'Small', M:'Medium', L:'Large', XL:'Extra Large', V:'Variable', G:'Gravity' };
   const DEFAULT_SIZE = 'M';
 
-  let session = { cart_count: 8, carts: {}, cart_sizes: {}, current_group_id: 1, last_group_start_at: null, cart_hidden: {}, auto_hide_stale: false };
+  let session = { cart_count: 8, carts: {}, cart_sizes: {}, current_group_id: 1, last_group_start_at: null, cart_hidden: {}, auto_hide_stale: false, cart_labels: {}, cart_notes: {} };
   let log = []; // {id, cart, start, end, durationSec, overtime}
   let lastUsed = {}; // { "1": isoStringOfLastRideEnd, ... }
   let undoData = null;
@@ -499,6 +514,8 @@
     session.last_group_start_at = data.last_group_start_at || null;
     session.cart_hidden = data.cart_hidden || {};
     session.auto_hide_stale = !!data.auto_hide_stale;
+    session.cart_labels = data.cart_labels || {};
+    session.cart_notes = data.cart_notes || {};
   }
 
   async function loadLog(){
@@ -532,6 +549,8 @@
         last_group_start_at: session.last_group_start_at,
         cart_hidden: session.cart_hidden,
         auto_hide_stale: session.auto_hide_stale,
+        cart_labels: session.cart_labels,
+        cart_notes: session.cart_notes,
         updated_at: new Date().toISOString()
       })
       .eq('id', 1);
@@ -577,6 +596,24 @@
 
   function sizeOf(n){
     return session.cart_sizes[n] || DEFAULT_SIZE;
+  }
+
+  function labelOf(n){
+    const custom = session.cart_labels[n];
+    return (custom != null && String(custom).trim() !== '') ? String(custom).trim() : String(n);
+  }
+
+  function noteOf(n){
+    return session.cart_notes[n] || '';
+  }
+
+  function isLabelTaken(candidate, excludeN){
+    const target = candidate.trim().toLowerCase();
+    for(let m=1; m<=session.cart_count; m++){
+      if(String(m) === String(excludeN)) continue;
+      if(labelOf(m).toLowerCase() === target) return true;
+    }
+    return false;
   }
 
   function daysIdle(n){
@@ -667,7 +704,7 @@
           const pct = Math.min(100, (elapsed/LIMIT_MS)*100);
           tile.innerHTML = `
             <div class="tile-header">
-              <div class="num">#${n}</div>
+              <div class="num">#${labelOf(n)}</div>
               <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
             </div>
             <div>
@@ -685,7 +722,7 @@
             : 'tap to start';
           tile.innerHTML = `
             <div class="tile-header">
-              <div class="num">#${n}</div>
+              <div class="num">#${labelOf(n)}</div>
               <div class="adjust-btn" data-adjust="${n}">&#9201;</div>
             </div>
             <div>
@@ -784,12 +821,16 @@
 
       html += `<div class="settings-row">
         <div class="settings-row-top">
-          <div class="num">#${n}</div>
+          <div class="cart-number-wrap">
+            <span class="hash">#</span>
+            <input class="cart-number-input mono" type="text" inputmode="numeric" data-cart-number="${n}" value="${labelOf(n)}">
+          </div>
           <div class="settings-badges">
             ${stale ? `<span class="badge-stale">${staleText}</span>` : ''}
             ${effectivelyHidden ? `<span class="badge-hidden">Hidden</span>` : ''}
           </div>
         </div>
+        <input class="note-input" type="text" placeholder="Add a note (e.g. needs repair)" data-cart-note="${n}" value="${noteOf(n).replace(/"/g,'&quot;')}">
         <div class="size-select-group" data-cart="${n}">`;
       SIZES.forEach(s => {
         html += `<button class="size-select-btn ${s===current?'selected':''}" data-set-size="${s}">${s}</button>`;
@@ -820,6 +861,39 @@
           session.cart_hidden[n] = true;
         }
         render();
+        await saveSession();
+      });
+    });
+    settingsList.querySelectorAll('[data-cart-number]').forEach(input => {
+      input.addEventListener('change', async () => {
+        const n = input.dataset.cartNumber;
+        const newVal = input.value.trim();
+        const oldVal = labelOf(n);
+        if(newVal === ''){
+          input.value = oldVal;
+          alert('Cart number can\'t be empty.');
+          return;
+        }
+        if(newVal === oldVal) return;
+        if(isLabelTaken(newVal, n)){
+          input.value = oldVal;
+          alert(`Cart number "${newVal}" is already used by another cart. Choose a different number.`);
+          return;
+        }
+        session.cart_labels[n] = newVal;
+        render();
+        await saveSession();
+      });
+    });
+    settingsList.querySelectorAll('[data-cart-note]').forEach(input => {
+      input.addEventListener('change', async () => {
+        const n = input.dataset.cartNote;
+        const val = input.value.trim();
+        if(val){
+          session.cart_notes[n] = val;
+        } else {
+          delete session.cart_notes[n];
+        }
         await saveSession();
       });
     });
@@ -874,7 +948,7 @@
         html += `
           <div class="tile finish-row ${st}" data-cart="${item.n}">
             <div class="finish-row-left">
-              <div class="num">#${item.n}</div>
+              <div class="num">#${labelOf(item.n)}</div>
               <div class="finish-size">${item.size}</div>
             </div>
             <div class="finish-row-right">
@@ -910,7 +984,7 @@
     }
     const rows = log.map(entry => `
       <tr>
-        <td>#${entry.cart}</td>
+        <td>#${labelOf(entry.cart)}</td>
         <td class="mono">${fmtClockTime(entry.start)}</td>
         <td class="mono">${fmtClockTime(entry.end)}</td>
         <td class="dur">${fmt(entry.durationSec*1000)}</td>
@@ -976,9 +1050,9 @@
     let promptMsg, currentMinutesAgo = 0;
     if(cart && cart.state === 'running'){
       currentMinutesAgo = Math.round((Date.now() - cart.start)/60000);
-      promptMsg = `Cart #${n} is running. It currently shows as started ${currentMinutesAgo} min ago.\n\nEnter the correct number of minutes ago it actually left (0 = just now):`;
+      promptMsg = `Cart #${labelOf(n)} is running. It currently shows as started ${currentMinutesAgo} min ago.\n\nEnter the correct number of minutes ago it actually left (0 = just now):`;
     } else {
-      promptMsg = `Cart #${n} shows as idle. If it actually left already, enter how many minutes ago it left (this starts the timer retroactively):`;
+      promptMsg = `Cart #${labelOf(n)} shows as idle. If it actually left already, enter how many minutes ago it left (this starts the timer retroactively):`;
     }
     const input = prompt(promptMsg, String(currentMinutesAgo));
     if(input === null) return; // cancelled
@@ -997,7 +1071,7 @@
     undoData = entries; // always an array now, even for a single stop
     if(entries.length === 1){
       const entry = entries[0];
-      toastText.textContent = `Cart #${entry.cart} stopped \u2014 ${fmt(entry.durationSec*1000)}${entry.overtime ? ' (double)' : ''}`;
+      toastText.textContent = `Cart #${labelOf(entry.cart)} stopped \u2014 ${fmt(entry.durationSec*1000)}${entry.overtime ? ' (double)' : ''}`;
     } else {
       const overCount = entries.filter(e => e.overtime).length;
       toastText.textContent = `Stopped ${entries.length} carts${overCount ? ` \u2014 ${overCount} double` : ''}`;
