@@ -1,0 +1,13 @@
+services:
+  split:
+    build: .
+    container_name: split
+    restart: unless-stopped
+    # Only reachable from the server itself; Tailscale publishes it to your tailnet.
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - split-data:/data
+
+volumes:
+  split-data:
