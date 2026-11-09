@@ -6,6 +6,7 @@ A tiny shared-expenses app for two people. Everything is in Euro.
 - Split it equally, have the other person owe all of it, or split it by exact amounts or by percent
 - Tap an entry to edit or delete it
 - One balance shows who owes whom. **Settle up** records a full or partial payment back
+- **📊 Stats**: total spent, who paid how much, each person's share, a monthly bar chart and the biggest expenses, for this month, last month, this year or all time
 
 It is one Python file (`server.py`, standard library only) that serves the page and stores
 everything in a single SQLite file, run with Docker. It is meant to be reached privately over Tailscale.
